@@ -1,4 +1,4 @@
-This code post-processes molecular dynamics (MD) simulation data to calculate pressure and refines it using the Irving-Kirkwood method. The simulation is performed using GROMACS, which generates trajectory files that are analyzed with MDAnalysis.
+The two codes (Balance_virial_IK_Radial_Inside_V04.py & Balance_virial_IK_Radial_Outside_V04.py) post-processes molecular dynamics (MD) simulation data to calculate pressure and refines it using the Irving-Kirkwood method. The simulation is performed using GROMACS, which generates trajectory files that are analyzed with MDAnalysis.
 
 In MD simulations, pressure arises from both particle motion and interactions:
     Kinetic and virial Contributions.
