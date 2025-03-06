@@ -1,923 +1,214 @@
-import MDAnalysis as mda
 import numpy as np
-from decimal import Decimal, getcontext
-import numpy as np
-import MDAnalysis as mda
-import numpy as np
-import matplotlib.pyplot as plt
-from MDAnalysis.analysis import distances
+import sys
+import typing
 import pandas as pd
-from scipy.stats import norm
-import time
-from MDAnalysis.lib.nsgrid import FastNS
-from MDAnalysis.lib.NeighborSearch import AtomNeighborSearch
-from decimal import Decimal, getcontext
-from scipy import constants as cst
-
-### Please choose number of segments !
-num_segments = 1
-print("The number of the segments is :\n",num_segments)
-
-#C6 = 0.21558       KJ mol^-1 nm^6
-#C12 = 0.0023238    KJ mol^-1 nm^12
-cut_off = 12             
-epsilon=1.19503 # kcal/mol          
-sigma=4.7                 
-atom_mass= 72
-r1=9
-rc=12
-
-r = np.arange(0.01,rc,0.001)
-
-def get_abc(alpha,r1,rc):
-    A = -((alpha+4)*rc-(alpha+1)*r1)/(rc**(alpha+2)*(rc-r1)**2)
-    A = alpha*A
-    B = ((alpha+3)*rc-(alpha+1)*r1)/(rc**(alpha+2)*(rc-r1)**3)
-    B = alpha*B
-    C = (1/rc**alpha) - (A/3)*(rc-r1)**3 - (B/4)*(rc-r1)**4
-    return A,B,C
-
-def get_s(r,alpha,r1,rc):
-    A,B,C = get_abc(alpha,r1,rc)
-    S = A*(r-r1)**2 + B*(r-r1)**3
-    return S
-
-def get_switched_force(r,alpha,r1,rc):
-    unswitched = alpha/r**(alpha+1)
-    switched = unswitched + get_s(r,alpha,r1,rc)
-    switched[r<r1] = unswitched[r<r1]
-    switched[rc<=r] = 0.0
-    switched[r<0.04] = 0.0
-    return switched
-
-
-def F_vdw_switch(r):
-    Fs_12= get_switched_force(r,alpha=12,r1=r1,rc=rc)
-    Fs_6 = get_switched_force(r,alpha=6,r1=r1,rc=rc)
-    A=  4 * epsilon * sigma**12
-    C=  4 * epsilon * sigma**6
-    sign = +1
-    F_vdw_switch = sign * (A*Fs_12 - C*Fs_6)
-    return  F_vdw_switch
+from colors_text import TextColor as bcolors
+import pandas as pd
+import numpy as np
+import sys
+import typing
+import os
+import subprocess
+from subprocess import call
+import shutil
+import multiprocessing
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+from itertools import islice
+import math
 
 
 
+class ReadGro:
+    """reading GRO file based on the doc"""
+
+    info_msg: str = 'Message:\n'  # Message to pass for logging and writing
+    line_len: int = 45  # Length of the lines in the data file
+    gro_data: pd.DataFrame  # All the informations in the file
+    # The follwings will set in __process_header_tail method:
+    title: str  # Name of the system
+    number_atoms: int  # Total number of atoms in the system
+    pbc_box: str  # Size of the box (its 3 floats but save as a string)
+
+    def __init__(self,
+                 fname: str,  # Name of the input file
+                 ) -> None:
+        self.gro_data = self.read_gro(fname)
+
+    def read_gro(self,
+                 fname: str  # gro file name
+                 ) -> pd.DataFrame:
+        """read gro file lien by line"""
+        counter: int = 0  # To count number of lines
+        processed_line: list[dict[str, typing.Any]] = []  # All proccesed lines
+        with open(fname, 'r', encoding='utf8') as f_r:
+            while True:
+                line = f_r.readline()
+                if len(line) != self.line_len:
+                    self.__process_header_tail(line.strip(), counter)
+                else:
+                    processed_line.append(self.__process_line(line.rstrip()))
+                counter += 1
+                if not line.strip():
+                    break
+        ReadGro.info_msg += f'\tFile name is {fname}\n'        
+        ReadGro.info_msg += f'\tSystem title is {self.title}\n'
+        ReadGro.info_msg += f'\tNumber of atoms is {self.number_atoms}\n'
+        ReadGro.info_msg += f'\tBox boundary is {self.pbc_box}\n'
+        return pd.DataFrame(processed_line)
+
+    @staticmethod
+    def __process_line(line: str  # Data line
+                       ) -> dict[str, typing.Any]:
+        """process lines of information"""
+        resnr = int(line[0:5])
+        resname = line[5:10].strip()
+        atomname = line[10:15].strip()
+        atomnr = int(line[15:20])
+        a_x = float(line[20:28])
+        a_y = float(line[28:36])
+        a_z = float(line[36:44])
+        processed_line: dict[str, typing.Any] = {
+                                                 'residue_number': resnr,
+                                                 'residue_name': resname,
+                                                 'atom_name': atomname,
+                                                 'atom_id': atomnr,
+                                                 'x': a_x,
+                                                 'y': a_y,
+                                                 'z': a_z,
+                                                }
+        return processed_line
+
+    def __process_header_tail(self,
+                              line: str,  # Line in header or tail
+                              counter: int  # Line number
+                              ) -> None:
+        """Get the header, number of atoms, and box size"""
+        if counter == 0:
+            self.title = line
+        elif counter == 1:
+            self.number_atoms = int(line)
+        elif counter == self.number_atoms + 2:
+            self.pbc_box = line
 
 
-class CirclePlot:
-    def __init__(self, origin_yy, origin_zz, cylinder_radius, RMax,cutoff, num_points=100):
-        """
-        Initialize the circle with center at (origin_yy, origin_zz) and the specified cylinder_radius.
-        Parameters:
-        - origin_yy: Y-coordinate of the center.
-        - origin_zz: Z-coordinate of the center.
-        - cylinder_radius: Radius of the circle.
-        - num_points: Number of points used to plot the circle (default is 100).
-        """
-        self.origin_yy = origin_yy
-        self.origin_zz = origin_zz
-        self.cylinder_radius = cylinder_radius
-        self.RMax = RMax # cylinder_radius+1.2nm
-        self.cutoff = cutoff
-        self.num_points = num_points
-        self.generate_circle_points()
-        
-    def check_position_inside_cutoff(self, y, z):
-        """
-        This method checks the position of a point (y, z) relative to the circle.
-        It returns whether the point is on, above, or below the cut of radius.
-        The circle equation is: (y - Origin_YY)^2 + (z - Origin_ZZ)^2 = Radius^2.
-        """
-        # Calculate the squared distance from the center
-        distance_squared = (y - self.origin_yy)**2 + (z - self.origin_zz)**2
-        RMax_radius_squared = self.RMax**2
-        
-        if distance_squared == RMax_radius_squared:
-            return "on"
-        elif distance_squared > RMax_radius_squared:
-            return "above"
-        else:
-            return "below"
-        
-            
-    def check_position_inside_sharp_cutoff(self, y, z):
-
-        distance_squared = (y - self.origin_yy)**2 + (z - self.origin_zz)**2
-        RMax_radius_squared_sharp = self.cylinder_radius**2 + self.cutoff**2
-        
-        if distance_squared == RMax_radius_squared_sharp:
-            return "on"
-        elif distance_squared > RMax_radius_squared_sharp:
-            return "above"
-        else:
-            return "below"
-        
-    def check_position(self, y, z):
-        """
-        This method checks the position of a point (y, z) relative to the circle.
-        It returns whether the point is on, above, or below the cut of radius.
-        The circle equation is: (y - Origin_YY)^2 + (z - Origin_ZZ)^2 = Radius^2.
-        """
-        # Calculate the squared distance from the center
-        distance_squared = (y - self.origin_yy)**2 + (z - self.origin_zz)**2
-        Cylinder_radius_squared = self.cylinder_radius**2
-        
-        if distance_squared == Cylinder_radius_squared:
-            return "on"
-        elif distance_squared > Cylinder_radius_squared:
-            return "above"
-        else:
-            return "below"
-        
-    def generate_circle_points(self):
-        """
-        This method generates points that satisfy the circle equation in the y-z plane
-        by parameterizing the circle. Returns a list of (y, z) points along the circle.
-        """
-        self.theta = np.linspace(0, 2 * np.pi, self.num_points)
-        self.y_points_circle_cylinder = self.origin_yy + self.cylinder_radius * np.cos(self.theta)
-        self.z_points_circle_cylinder = self.origin_zz + self.cylinder_radius * np.sin(self.theta)
-        self.y_points_circle_RMax = self.origin_yy + self.RMax * np.cos(self.theta)
-        self.z_points_circle_RMax = self.origin_zz + self.RMax * np.sin(self.theta)
-        
 
 
-    def interpolate_point(self, A, B, S):
-        """
-        Interpolate between points A and B using parameter S (0 <= S <= 1).
-        if s=0, the result is vector_1.
-        if s=1, the result is vector_2.
-        if 0<S<1, the result is between A and B.
-        if S>1 or S<0, the result extrapolates beyond A or B.
-        """
-        vector_1 = (A[1] - self.origin_yy, A[2] - self.origin_zz)  
-        vector_2 = (B[1] - self.origin_yy, B[2] - self.origin_zz) 
-        vector_diff = (vector_2[0] - vector_1[0], vector_2[1] - vector_1[1])
-        scaled_vector = (vector_diff[0] * S, vector_diff[1] * S)
-        result_vector = (vector_1[0] + scaled_vector[0], vector_1[1] + scaled_vector[1])
-        return result_vector
+class APL_ANALYSIS:
     
- 
-        
-    def compute_intersection(self, A, B):
-        Ay, Az = A[1], A[2]
-        By, Bz = B[1], B[2]
-        dy, dz = By - Ay, Bz - Az
-        a = dy**2 + dz**2
-        b = 2 * (dy * (Ay - self.origin_yy) + dz * (Az - self.origin_zz))
-        c = (Ay - self.origin_yy)**2 + (Az - self.origin_zz)**2 - self.cylinder_radius**2 
-        
-        discriminant = b**2 - 4*a*c 
-        #print("discriminant:",discriminant)
-        intersections = []
-        if discriminant < 0:
-            #print("No intersection")
-            intersections.append(())
-            return intersections  # No intersection, return an empty list
-
-        elif discriminant == 0: ###  Tangent case 
-            #print("Only one intersection")
-            S1 = -b / (2 * a)
-            if 0 <= S1 <= 1:
-                inter_y = Ay + S1 * dy
-                inter_z = Az + S1 * dz
-                intersections.append(())  # Store S1 along with the intersection
-                #intersections.append((S1, inter_y, inter_z))  # Store S1 along with the intersection
-            else:
-                intersections.append(())
-            return intersections
-
-        elif discriminant > 0:
-            #print("Two intersections")
-            sqrt_discriminant = np.sqrt(discriminant)
-            S1 = (-b + sqrt_discriminant) / (2 * a)
-            S2 = (-b - sqrt_discriminant) / (2 * a)
-
-            # Store the intersections with their corresponding S values
-            for S in [S1, S2]:
-                inter_y = Ay + S * dy
-                inter_z = Az + S * dz
-                intersections.append((S, inter_y, inter_z))
-            return intersections
     
-            
-    
-    def plot_circle(self, A, B):
-        """
-        Plot the cylinder radius in the 2D YZ plane, mark the center, and show points A, B, and S.
-        Also check and print the position of each point relative to the circle.
-        """
-        plt.figure(figsize=(6,6))
-        plt.plot(self.y_points_circle_cylinder, self.z_points_circle_cylinder, label="Cylinder_Radius")
-        plt.plot(self.y_points_circle_RMax, self.z_points_circle_RMax, label="Cutoff")
-        plt.scatter([self.origin_yy], [self.origin_zz], color='red', label="Center")  
-        # Plot points A and B 
-        plt.scatter([A[1]], [A[2]], color='blue',  label="Point A")   # Point A(y, z)
-        plt.scatter([B[1]], [B[2]], color='green', label="Point B")   # Point B(y, z)
-        # Check position of points A and B
-        print(f"Point A is {self.check_position(A[1], A[2])} the Cylinder radius.")
-        print(f"Point B is {self.check_position(B[1], B[2])} the Cylinder radius.")
-        # Compute intersection points 
-        intersections = self.compute_intersection(A, B)
-        #print("INT:",intersections)
-        count_non_empty_tuples = len([x for x in intersections if x]) 
-        #print("# OF intersections:",(count_non_empty_tuples))
-        
-        it = 0  # Initialize iteration counter
-        if count_non_empty_tuples == 2:
-            INT_Y1 = float(intersections[0][1])
-            INT_Z1 = float(intersections[0][2])
-            INT_Y2 = float(intersections[1][1])
-            INT_Z2 = float(intersections[1][2])
-            plt.scatter(INT_Y1, INT_Z1, color='purple', label="Intersection 1")
-            plt.scatter(INT_Y2, INT_Z2, color='purple', label="Intersection 2")
-
-            plt.title(f"Cylinder Radius in YZ Plane (Iteration {it})\n"
-                    f"Intersections: ({INT_Y1:.2f}, {INT_Z1:.2f}) & ({INT_Y2:.2f}, {INT_Z2:.2f})")
-
-            filename = f"circle_intersection_{it}_{INT_Y1:.2f}_{INT_Z1:.2f}_{INT_Y2:.2f}_{INT_Z2:.2f}.png"
-            plt.xlabel("Y-axis")
-            plt.ylabel("Z-axis")
-            plt.legend()
-            plt.axis("equal") 
-            plt.savefig(filename, dpi=300, bbox_inches='tight')
-            plt.show()
-            it += 1  # Increment iteration counter
-
-        elif count_non_empty_tuples == 1:
-            INT_Y1, INT_Z1 = intersections[0][1], intersections[0][2]
-            # Handle NaN cases by checking the second intersection
-            if np.isnan(INT_Y1) or np.isnan(INT_Z1):
-                INT_Y1, INT_Z1 = intersections[1][1], intersections[1][2]  
-
-            plt.title(f"Cylinder Radius in YZ Plane (Iteration {it})\n"
-                    f"Intersection: ({INT_Y1:.2f}, {INT_Z1:.2f})")
-
-            filename = f"circle_intersection_{it}_{INT_Y1:.2f}_{INT_Z1:.2f}.png"
-            plt.scatter([self.origin_yy], [self.origin_zz], color='red', label="Center")  
-            plt.scatter(INT_Y1, INT_Z1, color='purple', label="Intersection")
-            plt.xlabel("Y-axis")
-            plt.ylabel("Z-axis")
-            plt.legend()
-            plt.axis("equal") 
-            plt.savefig(filename, dpi=300, bbox_inches='tight')
-            plt.show()
-            it += 1  # Increment iteration counter
-
-        else:
-            plt.scatter([self.origin_yy], [self.origin_zz], color='red', label="Center")
-            plt.title(f"Cylinder Radius in YZ Plane (Iteration {it})\nNo Valid Intersections Found")
-            plt.xlabel("Y-axis")
-            plt.ylabel("Z-axis")
-            plt.legend()
-            plt.axis("equal")
-            plt.show()
-            it += 1  # Increment iteration counter
-
-
-
-class Irving_Kirwood:
-    def __init__(self, norm_displacement_vector, Radius, Z, num_segments, X , r_MIC_x):
-        self. norm_displacement_vector = norm_displacement_vector
-        self.Radius=Radius
-        self.Z = Z  # Box size (Length of box in Z direction)
-        self.num_segments = num_segments  # Number of segments
-        self.X = X  # Base virial (unmodified)
-        self.segment_length = float(Z / num_segments)  # Length of each segment
-        self.r_MIC_x = r_MIC_x
-        
+    def __init__(self, membrane_LX: float = 43.51812, membrane_LY: float = 45.69877,  mesh_resolution: int = 1):  
+        self.membrane_LX=membrane_LX
+        self.membrane_LY=membrane_LY
+        self.membrane_area = self.membrane_LX*self.membrane_LY
+        self.mesh_resolution = mesh_resolution
         
 
-    def find_segment(self, z):
-        
-        #print(z)
-        z = z % self.Z 
-        #print(z)
-        
-        for idx, (low, high) in enumerate(self.get_segments()):
-            if (low <= z < high) or (idx == self.num_segments - 1 and abs(z - self.Z) < 1e-10):
-                return idx, low, high
-        return None, None, None  # Return None if out of bounds
-
-    def get_segments(self):
-        """Return the list of segments based on the box's dimensions."""
-        segments = []
-        offset = 0.0000  # Define the shift for the first segment
-        for i in range(self.num_segments):
-            low = offset + i * self.segment_length
-            high = offset + (i + 1) * self.segment_length
-            segments.append((low, high))
-        return segments
-    
-        
-    def interaction(self, A, B, z_A, z_B):
-        output_file = "interaction_log.txt"
-
-      
-        # Open file in append mode ('a' keeps previous logs)
-        with open(output_file, "a") as file:
-            seg_A, low_A, high_A = self.find_segment(z_A)
-            seg_B, low_B, high_B = self.find_segment(z_B)
-            
-            
-            midpoint= self.Z / 2
-
-            #z_A = z_A % self.Z
-            #z_B = z_B % self.Z
-
-            if seg_A is None or seg_B is None:
-                raise ValueError("Particles A or B are out of bounds!")
-
-            distance_AB_x = self.r_MIC_x
-            
-            
-            
-
-            # Logging Particle and Segment Data
-            file.write(f"\nParticle A: {A}, z_A: {z_A:.10f}, Segment: {seg_A}, Bounds: ({low_A:.10f}, {high_A:.10f})\n")
-            file.write(f"Particle B: {B}, z_B: {z_B:.10f}, Segment: {seg_B}, Bounds: ({low_B:.10f}, {high_B:.10f})\n")
-
-            # Case 0: Particles in the same segment
-            if seg_A == seg_B:
-                file.write(f"Case 0: Particles are in the same segment.\n")
-                file.write(f"Initial Virial: {self.X:.10f} \n")
-                file.write(f"New Virial: {self.X:.10f} \n")
-                return self.X
-
-            # Case 1: Particle A in a segment, B in the segment above (no PBC)
-            if (seg_B == (seg_A + 1)) and abs(z_A-z_B) < 12 :
-                a = abs(high_A - z_A)  # Distance from A to the upper boundary
-                virial = (a / distance_AB_x) * self.X 
-                file.write(f"Case 1: Particle A is in segment {seg_A}, B in {seg_B} (above).\n")
-                file.write(f"Distance to boundary: {a:.10f} \n")
-                file.write(f"distance_AB_x: {distance_AB_x} \n")
-                file.write(f"Initial Virial: {self.X:.10f} \n")
-                file.write(f"New Virial: {virial:.10f} \n")
-                return 2.0*virial
-            
-            
-            
-            # Case 2: Particle A in a segment, B in the segment below (no PBC)
-            if (seg_B == (seg_A - 1) ) and abs(z_A-z_B) < 12:
-                a = abs(z_A - low_A)  # Distance from A to the lower boundary
-                virial = self.X * (a / distance_AB_x)
-                file.write(f"Case 2: Particle A is in segment {seg_A}, B in {seg_B} (below).\n")
-                file.write(f"Distance to boundary: {a:.10f} \n")
-                file.write(f"distance_AB_x: {distance_AB_x} \n")
-                file.write(f"Initial Virial: {self.X:.10f} \n")
-                file.write(f"New Virial: {virial:.10f} \n")
-                return 2.0*virial
-            
-            
-            
-
-            if abs(z_A-z_B) > 12:
-                if seg_A == 0 and seg_B == 1:#self.num_segments - 1:
-                    a = abs(z_A-low_A)  # Distance from A to the upper boundary of the segment
-                    virial = (a / distance_AB_x) * self.X 
-                    file.write(f"Case 3: Particle A is in segment {0}, B in {seg_B} (PBC).\n")
-                    file.write(f"Distance to boundary: {a:.10f} \n")
-                    file.write(f"distance_AB_x: {distance_AB_x} \n")
-                    file.write(f"Initial Virial: {self.X:.10f} \n")
-                    file.write(f"New Virial: {virial:.10f} \n")
-                    return 2.0*virial
-                    
-                
-                
-                    
-
-            if abs(z_A-z_B) > 12:
-                if seg_B == 0 and seg_A == 1:#self.num_segments - 1:
-                    a = abs(high_A - z_A)
-                    virial = (a / distance_AB_x) * self.X 
-                    file.write(f"Case 4: Particle A is in segment {seg_A}, B in {0} (PBC).\n")
-                    file.write(f"Distance to boundary: {a:.10f} \n")
-                    file.write(f"distance_AB_x: {distance_AB_x} \n")
-                    file.write(f"Initial Virial: {self.X:.10f} \n")
-                    file.write(f"New Virial: {virial:.10f} \n")
-                    return 2.0*virial
-                            
-
-
-            # Default error handling
-            file.write("Error: Undefined case! Something is wrong.\n")
-            return None
-
-
-
-                    
-                    
-
-
-class Radius_Calculation:
-    def __init__(self, 
-                segment,
-                num_segments,
-                u0,  # Water MD universe
-                u,   # Mem MD universe 
-                atoms_positions_water=None, 
-                atoms_positions_mem=None,
-                *args, 
-                **kwargs):
-        super().__init__(*args, **kwargs) 
-        self.universe_water = u0  
-        #print(self.universe_water)
-        self.universe_membrane = u
-        #print(self.universe_membrane)
-        self.atoms_positions_water    = self.universe_water.atoms.positions
-        #print("Water positions:\n",self.atoms_positions_water)
-        self.atoms_positions_membrane = self.universe_membrane.atoms.positions
-        #print("Membrane positions:\n",self.atoms_positions_membrane)
-        self.segment = segment
-        self.num_segments = num_segments
-        
-
-        
-    def Radius(self):
-
-        cylinder_x_min =(np.min(self.universe_water.positions[:, 0]))
-        #print("cylinder_x_min:\n",cylinder_x_min)
-        cylinder_x_max =(np.max(self.universe_water.positions[:, 0]))
-        #print("cylinder_x_max:\n",cylinder_x_max)
-        segment_y_min=-10000
-        segment_y_max=+10000
-        segment_z_min=-10000
-        segment_z_max=+10000
-        # Total_length = 337.50332642 ->>> obtained from the box
-        Total_length =  337.50332642#(cylinder_x_max-cylinder_x_min)
-        #print("Total_length:\n",Total_length)
-        segment_width = float(Total_length / self.num_segments)
-        #print("segment_width:\n",segment_width)
-        segment_x_min = cylinder_x_min + self.segment * segment_width
-        #print("segment_x_min:\n",segment_x_min)
-        segment_x_max = segment_x_min + segment_width
-        #print("segment_x_max:\n",segment_x_max)
-        
-        # Calculate the lipid center of mass for the segment 
-        segment_mem_C5 = self.universe_membrane.select_atoms(f"prop x >= {-10000} and prop x < {10000}")
-        #print("segment_mem_C5:\n",len(segment_mem_C5))
-        center_of_mass_mem = segment_mem_C5.center_of_mass()
-        #print("center_of_mass_mem:\n",center_of_mass_mem)
-        # Calculate the distances of atoms from the center of mass in the y and z directions (ignoring x)  in a certin segment
-        distances = np.linalg.norm(segment_mem_C5.positions[:, 1:3] - center_of_mass_mem[1:3], axis=1) 
-        # Calculate mean, inner, and outer radius for this segment
-        MIN_RADIUS_SEGMENT  = np.min(distances)
-        #print(MIN_RADIUS_SEGMENT)
-        MAX_RADIUS_SEGMENT  = np.max(distances)
-        #print(MAX_RADIUS_SEGMENT)
-        # Radius cutoff values (adjusted)
-        radius_cutoff_inner = MIN_RADIUS_SEGMENT   # Angstroms
-        radius_cutoff_outer = MAX_RADIUS_SEGMENT   # Angstroms
-        # Box volume inside and outside the segment
-        box_volume_inside = np.pi * (MIN_RADIUS_SEGMENT ** 2) * (segment_x_max - segment_x_min)
-        box_volume_outside = ((segment_y_max - segment_y_min) * (segment_y_max - segment_z_min) * (segment_x_max - segment_x_min)) - np.pi * (MAX_RADIUS_SEGMENT ** 2) * (segment_x_max - segment_x_min)
-
-        # Need to select water particles within the cylinder radius (MIN_RADIUS_SEGMENT)
-        segment_water = self.universe_water.select_atoms(f"prop x >= {-10000} and prop x < {10000}")  # Water partilces in corresponding segment 
-        #print("segment_water selected in Radius:\n",segment_water) 
-        #print("atom positions in Radius:\n",segment_water.positions) 
-        # Define the output file name for the current segment
-        output_file = f"segment_{self.segment}_water_positions_In_Radius.txt"
-        np.savetxt(output_file, segment_water.positions, fmt="%.10f")
-        
-        x_positions = segment_water.positions[:, 0]
-        min_x = x_positions.min()
-        max_x = x_positions.max()
-        
-
-        # Append results to the output file
-        output_file="segment_extremes_In_Radius.txt"
-        with open(output_file, "a") as f:
-            f.write(f"Segment {self.segment}:\n")
-            f.write(f"    Segment Range: [{segment_x_min}, {segment_x_max}]\n")
-            f.write(f"    Min X = {min_x}, Max X = {max_x}\n\n")
+    def _get_xy_grid(self) -> tuple[np.ndarray, np.ndarray]:
+        """Generate a mesh grid for a given membrane area."""
+        mesh_size_X = self.membrane_LX / self.mesh_resolution
+        mesh_size_Y = self.membrane_LY / self.mesh_resolution
+        grid_area=mesh_size_X*mesh_size_Y
         
         
-
-        
-        return segment_water,center_of_mass_mem,radius_cutoff_inner, radius_cutoff_outer
-        
-        
-
-
-
-      
-class InitializeSimulation:
-    def __init__(self, 
-                 u,  # MD universe
-                 atoms_positions=None,  # Array - Angstroms
-                 box_size=None,  # Default to None, or replace with a specific default value
-                 num_atoms=None, 
-                 cutoff=None,  # Default to None, or specify a default value
-                 matrix=None,  # Default to None, or specify a default value
-                 p_ideal_atm=None,
-                 indices =None,
-                 inner_radius=None,
-                 segment=None,
-                 center_x =None,
-                 center_y =None,
-                 center_z=None,
-                 *args, 
-                 **kwargs):
-        super().__init__(*args, **kwargs)  
-        
-
-        self.universe = u  # MDAnalysis universe
-        #print("segment_water selected in InitializeSimulation:\n",self.universe )
-        #print("atoms_positions in InitializeSimulation:\n",self.universe.positions )
-        self.segment =segment
-        self.center_x =center_x,
-        self.center_y =center_y,
-        self.center_z=center_z,
-        self.atoms_positions = atoms_positions
-        self.box_size = box_size
-        self.num_atoms = num_atoms
-        self.cutoff = cutoff
-        self.matrix = matrix
-        self.p_ideal_atm=p_ideal_atm
-        self.indices= indices
-        self.inner_radius=inner_radius
-
-        
-        
-    def Box_Average(self):
-        volume = np.prod(self.box_size[:3])   # box volume
-        return volume 
-        
-
-    def p_ideal(self):
-        velocity = self.universe.select_atoms('name W').velocities  
-        volume = np.prod(self.box_size[:3])   # box volume
-        kinetic_energy =0.5* sum((atom_mass * np.dot(atom.velocity, atom.velocity)) for atom in ag)
-        #print("kinetic_energy (amu)(A/ps)^2:",kinetic_energy)
-        self.p_ideal = (2 * kinetic_energy) / (3 * volume)
-        #print("p_ideal amu / A ps^2 \n",self. p_ideal)
-        self.p_ideal_atm = self.p_ideal * 163.8
-        return self.p_ideal_atm
-
-        
-        
-    def calculate_pressure(self):
-        """Evaluate calculate_pressure based on the Virial"""
-        # Compute the ideal contribution
-        #p_ideal_atm =  self. p_ideal_atm
-        #print("p_ideal_atm:\n",p_ideal_atm)
-        #print("Subset contact matrix shape in pressure:", self.matrix.shape)
-        num_atoms = len(self.indices)
-        print("num_atoms in calc:",num_atoms)
-        #print("Phase 5")
-        print("SUB Matrix in INIT",matrix.shape)
-        MyVirial = []
-        pressures = [] 
-        neighbor_lists = []
-        output_file = f"atom_positions_and_neighbors_{self.segment}_data.txt"
-        # Open the file in append mode
-        with open(output_file, "a") as f:
-            Indices = (self.indices)
-            f.write(f"Indices : {Indices}\n")
-            for cpt, array in enumerate(self.matrix):
-                #print(cpt)
-                # Get list of neighboring atoms
-                f.write(f"cpt:{cpt}\n")
-                #f.write(f"{array}\n")
-                list = np.where(array)[0].tolist()
-                #f.write(f"{list}\n")
-                list = [ele for ele in list if  ele != self.indices[cpt]]
-                #print(list)
-                f.write(f"Neighbors indices:{list}\n")
-                neighbor_lists.append(list)
-                #f.write(f"{neighbor_lists}\n")
-                # Get current atom position
-                current_atom_position = self.universe[self.indices[cpt]].position 
-                np.set_printoptions(precision=10, suppress=True)
-                f.write(f"Current atom position for atom {self.indices[cpt]}: {current_atom_position[0]:.10f} {current_atom_position[1]:.10f} {current_atom_position[2]:.10f}\n")
-                # Get positions of the neighbors
-                neighbor_positions = [self.universe[ele].position for ele in list]
-                distances = [np.linalg.norm(current_atom_position - neighbor_position) for neighbor_position in neighbor_positions]
-                displacement = [(current_atom_position - neighbor_position) for neighbor_position in neighbor_positions]
-                # Write neighbor positions and displacement
-                for i, neighbor_position in enumerate(neighbor_positions):
-                    neighbor_element = list[i]
-                    
-                    displacement_str = f"{displacement[i][0]:.10f} {displacement[i][1]:.10f} {displacement[i][2]:.10f}"
-                    f.write(f" Neighbor element: {neighbor_element},Neighbor position: {neighbor_position[0]:.10f} {neighbor_position[1]:.10f} {neighbor_position[2]:.10f}, Displacement: {displacement_str}, Distance: {distances[i]:.10f}\n")
-
-          
-          
-
-        f_vdw_switch_count = 0  
-        output_file = f"All_interactions_{self.segment}_data.txt"
-        # Open the file in write mode
-        with open(output_file, 'w') as f:
-            total_virials_all_particles = []
-            for Ni in np.arange(np.sum(num_atoms)):
-                position_of_i = self.universe[self.indices[Ni]].position
-                position_of_A = position_of_i
-                x_position_of_A = position_of_i[0]
-                # Get the neighbor list for the current atom
-                neighbors_of_i = neighbor_lists[Ni]
-                neighbor_positions = [self.universe[neighbor].position for neighbor in neighbors_of_i]
-                
-                total_virial = 0
-                for neighbor in neighbors_of_i:
-                    f.write(f"position_of_i {position_of_i}:\n")
-                    neighbor_position = self.universe[neighbor].position
-                    f.write(f"neighbor_position {neighbor_position}:\n")
-
-                    position_of_B = neighbor_position
-                    x_position_of_B = position_of_B[0]
-
-                    # Displacement vector calculation
-                    displacement_vector = neighbor_position - position_of_i
-                    f.write(f"displacement_vector {displacement_vector}:\n")
-                    norm_displacement_vector = np.linalg.norm(displacement_vector)
-                    f.write(f"norm_displacement_vector {norm_displacement_vector}:\n")
-                    # Apply Minimum Image Convention (MIC)
-                    displacement_vector_mic = displacement_vector - np.round(displacement_vector / box_boundaries) * box_boundaries
-                    f.write(f"displacement_vector_mic {displacement_vector_mic}:\n")
-                    if displacement_vector[0] != displacement_vector_mic[0]:
-                        f.write(f"boundary Particle!\n")
-                        
-                    
-                    # Calculate norm of the MIC-adjusted displacement vector
-                    norm_displacement_vector_mic = np.linalg.norm(displacement_vector_mic)
-                    f.write(f"norm_displacement_vector_mic {norm_displacement_vector_mic}:\n")
-                    
-                    r_MIC = norm_displacement_vector_mic  # Angstrom
-                    if r_MIC > 12:
-                        print("Something went wrong!")
-
-                    # Calculate force_ij using the van der Waals potential switch
-                    f_vdw = F_vdw_switch(np.array([r_MIC]))[0]
-                    f_vdw_switch_count += 1  # Increment the counter
-                    # Calculate Virial
-                    Virial = norm_displacement_vector_mic * f_vdw  # kCal/mol
-                    f.write(f"Virial {Virial}:\n")
-                    # Radial Irving-Kirwood method
-                    r_MIC_x = abs(displacement_vector_mic[0])
-                    cylinder_radius = self.inner_radius
-                    cutoff=12
-                    RMax=cylinder_radius+cutoff
-                    A=position_of_A
-                    B=position_of_B
-                    circle = CirclePlot(origin_yy=self.center_y, origin_zz=self.center_z,  cylinder_radius=cylinder_radius ,cutoff=cutoff, RMax= RMax)
-                    
-                    # CASE 4: BOTH INSIDE THE CUTOFF RADIUS (R+d)
-                    if ((circle.check_position_inside_cutoff(A[1], A[2]) == "below") and (circle.check_position_inside_cutoff(B[1], B[2]) == "below")): 
-                        print("YES. Both particles are inside the Maximum allowd radius, i.e, Cylinder_Radius+Cutoff_Radius.")
-                        Intersections = (circle.compute_intersection(A, B))
-                        count_non_empty_tuples = len([x for x in Intersections if x]) 
-                        print("# OF Intersections:",count_non_empty_tuples)
-                        print("Intersections:",Intersections)
-                        circle.plot_circle(A, B)
-
-                        # CASE 3: NO SOLUTIONS OR ONLY ONE TANGENTIAL SOLUTION !
-                        if not any(intersection != () for intersection in Intersections):
-                            New_Virial = Virial
-                            print(f"No solution found and unchanged virial is {New_Virial}.")
-                            
-                        else:
-                            print("A valid intersection exists, proceed with calculations.")
-
-                            # CASE 1: ONE INSIDE AND ONE OUTSIDE 
-                            if circle.check_position(A[1], A[2]) == "below" and circle.check_position(B[1], B[2]) == "above":
-                                print("Particle A below the cylinder radius and Particle B above the radius")
-                                Distance_A_To_B = np.sqrt((A[1] - B[1])**2 + (A[2] - B[2])**2)
-                                print("Distance_A_To_B:\n", Distance_A_To_B)
-                                S_1 = Intersections[0][0]
-                                S_2 = Intersections[1][0]
-                                print("S_1 and S_2:",S_1,S_2)
-                                if 0 <= S_1 <= 1:
-                                    print("First solution has a valid S:0<S<1.")
-                                    #Distance_To_boundary = np.sqrt((A[1] - Intersections[0][1])**2 + (A[2] - Intersections[0][2])**2)
-                                    #New_Virial = (Distance_To_boundary / Distance_A_To_B) * Virial
-                                    New_Virial = S_1 * Virial
-                                    print("New_Virial:",New_Virial)
-                                    
-                                else:
-                                    print("Second solution has a valid S:0<S<1.")
-                                    #Distance_To_boundary = np.sqrt((A[1] - Intersections[1][1])**2 + (A[2] - Intersections[1][2])**2)
-                                    #New_Virial = (Distance_To_boundary / Distance_A_To_B) * Virial
-                                    New_Virial= S_2 * Virial
-                                    print("New_Virial:\n", New_Virial)
-                                    
-                                    
-                                    
-                            # CASE 0: BOTH INSIDE 
-                            elif circle.check_position(A[1], A[2]) == "below" and circle.check_position(B[1], B[2]) == "below":
-                                print("Particle A below the cylinder radius and Particle B below the cylinder radius with no solutions.")
-                                print("Virial does not change!.")
-                                New_Virial = Virial  # No change in virial if both are below
-                                print("New_Virial:\n", New_Virial)
-
-                            # CASE 2: BOTH OUTSIDE BUT STILL CONTRIBUTIONG
-                            elif circle.check_position(A[1], A[2]) == "above" and circle.check_position(B[1], B[2]) == "above":
-                                print("Particle A and B both above the cylinder radius but both inside the cutoff radius and therefore contributing!")
-                                Distance_A_To_B = np.sqrt((A[1] - B[1])**2 + (A[2] - B[2])**2)
-                                #print(Distance_A_To_B)
-                                S_1 = Intersections[0][0]
-                                INT_Y_1 = Intersections[0][1]
-                                INT_Z_1 = Intersections[0][2]
-                                S_2 = Intersections[1][0]
-                                INT_Y_2 = Intersections[1][1]
-                                INT_Z_2 = Intersections[1][2]
-                                DELTA_S = abs(S_1 - S_2)
-                                New_Virial = DELTA_S * Virial
-                                print("New_Virial:\n", New_Virial)
-                            else:
-                                New_Virial = Virial
-                                print("New_Virial:\n", New_Virial)
-
-
-                    else:
-                        print("NO. None of the particles are inside the Maximum allowd radius, i.e, Cylinder_Radius+Cutoff_Radius.")
-                        print("Virial does not change!.")
-                        New_Virial = Virial
-                        print("New_Virial:\n", New_Virial)
-                                        
-                    
-                    # Accumulate virial contribution
-                    total_virial += New_Virial  # kCal/mol
-                    #print("total_virial:",total_virial)
-
-                # Append total virial for this atom to the list
-                total_virials_all_particles.append(total_virial)
-                #print("total_virials_all_particles:",np.sum(total_virials_all_particles))
-
-                
-        ## Calculate pressure for the current frame
-        print(f"F_vdw_switch was executed {f_vdw_switch_count} times.")
-        #print(total_virials_all_particles)
-        CONVERSION_TO_ATM = 69475.55667#4184*16.38855174 
-        Sigma_Virial = (np.sum(total_virials_all_particles)) # kCal/mol
-        #print("Sigma_Virial:\n",Sigma_Virial)
-        print("Sigma_Virial:\n",(Sigma_Virial))
-        #print(f"Virial in kCal/mol: {0.5*(Sigma_Virial):.10f}")
-        #print(f"Virial in kJ/mol: {0.5*(Sigma_Virial*4.184):.10f}")
-        #Sigma_Virial= 0.5*(Sigma_Virial*4.184)
-        Volume = box_boundaries[0] * box_boundaries[1] * box_boundaries[2] # Angestrum^3
-        #Virial = ( (np.sum(total_virials_all_particles)) / (3*Volume))   # kCal/mol.Angestrum^3 
-        #print("Pressure in kcal/mol·Å³ :",Virial)
-        Pressure = ( (np.sum(total_virials_all_particles)) / (3*Volume)) * CONVERSION_TO_ATM  #  atm 
-        #print(f"Pressure in atm: {Virial:.10f}")
-        #print("Pressure in GROMACS in atm : -0.777210")
-        MyVirial.append(Sigma_Virial)
-        pressures.append(Pressure)
-        #print("End of Phase 7")
-        
-        return MyVirial , pressures
-                
-
-
-
-
-
-Kinetic_values=[]            
-Volume_values=[]
-Virial_values_outside=[]
-pressure_values_outside=[]
-Virial_values_inside=[]
-pressure_values_inside=[]
-universe  = mda.Universe("water_only.tpr", "water_only.trr")
-universe2 = mda.Universe("mem_only.tpr"  , "mem_only.trr")
-mean_segment_virial   = {f'Segment_{i+1}': [] for i in range(num_segments)}
-mean_segment_pressure = {f'Segment_{i+1}': [] for i in range(num_segments)}
-Myvirial=[]
-
-for ts, ts2 in zip(universe.trajectory[:1], universe2.trajectory[:1]): 
-    # Processing frames
-    print(f"Processing Frame in water simulation: {ts.frame}")
-    print(f"Processing Frame in membrane simulation: {ts2.frame}")
-    cutoff = 12  #  cutoff in Angstroms
-    box_boundaries = universe2.dimensions[:3]
-    box_geometry = np.array([90, 90, 90])  # Cubic box
-    box_size = np.array(box_boundaries.tolist()+box_geometry.tolist())
-    #print("box_size:",box_size)
-    ag_water = universe.select_atoms('all')
-    print("Water Total number:",len(ag_water))
-    #print(ag_water.positions[1])
-    #print(ag_water.positions[35])
-    ag_mem   = universe2.select_atoms('all') 
-    print("Membrane Total number:",len(ag_mem))
-    #print(ag_mem.positions)
-    # cylinder_x_min = np.round(np.min(ag_water.positions[:, 0]), 10)
-    # #print("cylinder_x_min:\n",cylinder_x_min)
-    # cylinder_x_max = np.round(np.max(ag_water.positions[:, 0]), 10)
-    # #print("cylinder_x_max:\n",cylinder_x_max)
-    # Total_Length = cylinder_x_max - cylinder_x_min 
-    # #print("Total_Length in Main:\n",Total_Length)
-    # Loop over each segment
-    for segment in range(num_segments):
-        print("segment number:\n",segment)
-        #print("Phase 1")
-        radius_calculator = Radius_Calculation(segment, num_segments , u0=ag_water, u=ag_mem, atoms_positions_water=None , atoms_positions_mem=None)
-        segment_ag , center_of_mass ,  inner_radius, outer_radius = radius_calculator.Radius()
-        #print("segment_water selected in Main:\n",segment_ag)
-        selected_atoms_inside = segment_ag[[np.linalg.norm(atom.position[1:3] - center_of_mass[1:3]) < inner_radius for atom in segment_ag]]
-        #print("Water Particles Inside Cylinder: \n",len(selected_atoms_inside))
-        selected_atoms_inside_positions = np.array([atom.position for atom in selected_atoms_inside])
-        #print("BBBB:",len(selected_atoms_inside_positions))
-        center_x = center_of_mass[0]  # X-coordinate of the membrane center of mass 
-        center_y = center_of_mass[1]  # Y-coordinate of the membrane center of mass 
-        center_z = center_of_mass[2]  # Z-coordinate of the membrane center of mass 
-        radius = inner_radius
-        # Extract X, Y, Z coordinates
-        x = selected_atoms_inside_positions[:, 0]
-        y = selected_atoms_inside_positions[:, 1]
-        z = selected_atoms_inside_positions[:, 2]
-        # Create a 3D plot
-        fig = plt.figure(figsize=(8, 6))
-        ax = fig.add_subplot(111, projection='3d')
-        theta = np.linspace(0, 2 * np.pi, 100) 
-        y_circle = center_y + radius * np.cos(theta)  # Y-coordinates of the circle
-        z_circle = center_z + radius * np.sin(theta)  # Z-coordinates of the circle
-        x_circle = np.full_like(theta, center_x)      # Keep X fixed (YZ plane)
-        ax.plot(x_circle, y_circle, z_circle, color='r', linewidth=10, label="Inner Radius")
-        #ax.scatter(center_x, center_y, center_z, color='red', s=100, label="Center of Mass")
-        ax.scatter(x, y, z, c='b', marker='o', alpha=0.5, label="Selected Water Molecules")
-        ax.set_xlabel("X-axis")
-        ax.set_ylabel("Y-axis")
-        ax.set_zlabel("Z-axis")
-        ax.set_xlim([0, 337.5])  
-        ax.set_ylim([0, 236.3])  
-        ax.set_zlim([0, 236.3])  
-        filename = "water_molecules_inside_cylinder.png"
-        plt.savefig(filename, dpi=300, bbox_inches='tight')
-        #plt.show()
-        selected_atom_inside_indices = [atom.index for atom in selected_atoms_inside] # ---> Using these indices, one can select the inside positions from the the universe (ag0) 
-        #print("CCCC:",(selected_atom_inside_indices))
-        selected_atoms_inside_ag = universe.atoms[selected_atom_inside_indices]
-        #print("DDDD:",len(selected_atoms_inside_ag))
-        selected_atoms_inside_ag_positions = np.array([atom.position for atom in selected_atoms_inside_ag])
-        #print(f"Segment {segment}:")
-        print(f"- Inside cutoff: {len(selected_atoms_inside)} atoms")
-        #from MDAnalysis.analysis import distances
-        # Compute the contact matrix  for sll particles in the system 
-        matrix = distances.contact_matrix(
-            ag_water.positions,  
-            cutoff=cut_off,
-            returntype="numpy",
-            box=box_size  
+        x_mesh, y_mesh = np.meshgrid(
+            np.arange(0.0, self.membrane_LX, mesh_size_X),
+            np.arange(0.0, self.membrane_LY, mesh_size_Y)
         )
-        #print("\n\n\n\n\n")
-        # Particles in the corresponding segment & inside the cylinder 
-        matrix = matrix[selected_atom_inside_indices,:]
-        print("Sub Matrix\n",len(matrix))
-        #print("Matrix",matrix.shape)
-        # Transpose the positions array: converts from (N, 3) to (3, N)
-        ag0 = universe.select_atoms('all') 
-        num_atoms = len(ag0)
-        P = ag0.positions   
-        ag0_transposed = P.T 
-        #Create an instance of InitializeSimulation
-        simulation = InitializeSimulation(
-            u = ag_water,                       # all water particles in  (N, 3) 
-            atoms_positions=ag0_transposed,     # all water particle positions in  (3, N)
-            box_size=box_boundaries,            # Box size
-            num_atoms=num_atoms,                # all particles
-            cutoff=cutoff,
-            matrix = matrix, 
-            indices = selected_atom_inside_indices,
-            inner_radius= inner_radius,
-            segment=segment,
-            center_x =center_x,
-            center_y =center_y,
-            center_z=center_z,
-        )
-        
-        #kinetic = simulation.p_ideal()
-        #Kinetic_values.append(kinetic)
-        Volume = simulation.Box_Average()
-        Volume_values.append(Volume)
-        pressure = simulation.calculate_pressure()
-        Myvirial.append(pressure[0])
-        Virial_values_inside.append(pressure[0])
-        pressure_values_inside.append(pressure[1])
-        mean_segment_virial[f'Segment_{segment+1}'].append(Virial_values_inside)
-        mean_segment_pressure[f'Segment_{segment+1}'].append(pressure_values_inside)
+
+        Mesh_NUMBER=1
         
 
-All_virial = np.sum(Myvirial)
-print("Total Virial is:\n",All_virial)
-print("Virial should be :-11947.754480930696")
-## Create a DataFrame from the mean segment values
-#mean_segment_virial_df = pd.DataFrame(mean_segment_virial)
-#mean_segment_virial_df.to_csv('mean_segment_virial_df.txt', sep='\t', index=False)
-#mean_segment_press_df = pd.DataFrame(mean_segment_pressure)
-#mean_segment_press_df.to_csv('mean_segment_press_df.txt', sep='\t', index=False)
+        return x_mesh, y_mesh , grid_area ,  Mesh_NUMBER , self.mesh_resolution , mesh_size_X , mesh_size_Y  , self.membrane_LX  , self.membrane_LY
+    
+    
+
+    @staticmethod
+    def write_gromacs_gro(gro_data: pd.DataFrame,
+                          filename: str,  # Name of the output file
+                          pbc_box=None,
+                          title=None
+                          ) -> None:
+        """Write DataFrame to a GROMACS gro file."""
+        
+        
+        df_i: pd.DataFrame = gro_data.copy()
+        
+        output_file_path = os.path.join(filename)
+        
+        with open(output_file_path, 'w', encoding='utf8') as gro_file:
+            if title:
+                gro_file.write(f'{title}')  # Add a comment line
+            gro_file.write(f'{len(df_i)}\n')  # Write the total number of atoms
+            for _, row in df_i.iterrows():
+                line = f'{row["residue_number"]:>5}' \
+                       f'{row["residue_name"]:<5}' \
+                       f'{row["atom_name"]:>5}' \
+                       f'{row["atom_id"]:>5}' \
+                       f'{row["x"]:8.3f}' \
+                       f'{row["y"]:8.3f}' \
+                       f'{row["z"]:8.3f}\n'
+                gro_file.write(line)
+            if pbc_box:
+                gro_file.write(f'{pbc_box}\n')
+
+
+    
+    @classmethod
+    def process_mesh(cls, x_mesh, y_mesh, mesh_size_X, mesh_size_Y, Mesh_NUMBER, mesh_resolution, xyz_i, max_z_threshold, min_z_threshold, frame):
+        selected_atoms_info = {}
+        selected_atoms_data_original = xyz_i
+        column_names_original = ['residue_number', 'residue_name', 'atom_name', 'atom_id', 'x', 'y', 'z']
+        df_selected_Raws_original = pd.DataFrame(selected_atoms_data_original, columns=column_names_original)
+        #print(xyz_i[:, 4])
+        x_min_mesh = 0
+        x_max_mesh = 9.6
+        y_min_mesh =  0
+        y_max_mesh = 1000
+        #mask_nc3 = np.full(len(xyz_i), True)
+        #ind_in_mesh_nc3_before_mask = np.arange(len(xyz_i))
+        mask_nc3 = (xyz_i[:, 2] == 'BB')
+        # Apply the mask to select atoms within the current mesh element based on XY & Z
+        ind_in_mesh_nc3 = np.where(
+            (xyz_i[:, 4] >= x_min_mesh) &
+            (xyz_i[:, 4] < x_max_mesh) &
+            (xyz_i[:, 5] >= y_min_mesh) &
+            (xyz_i[:, 5] < y_max_mesh) &
+            (xyz_i[:, 6] < max_z_threshold) &
+            (xyz_i[:, 6] > min_z_threshold) )
+    
+        # Select atom data based on the indices obtained
+        selected_atoms_data = xyz_i[ind_in_mesh_nc3]
+        #print(selected_atoms_data)
+        column_names = ['residue_number', 'residue_name', 'atom_name', 'atom_id', 'x', 'y', 'z']
+        df_selected_Raws = pd.DataFrame(selected_atoms_data, columns=column_names)
+        #print(len(df_selected_Raws))
+        #print(df_selected_Raws)
+        Index_List = df_selected_Raws.iloc[:, 3].tolist()
+        print(len(Index_List))
+
+        
+        # Write to file
+        with open("atoms_list.txt", "w") as file:
+            for atom in Index_List:
+                file.write(f"{atom}\n")
+        
+        print("Atoms written to atoms_list.txt")
 
 
 
-
-
-
-
-
-
-
-
-
-
+        
+    
+        return Index_List
+        
+read_gro_instance = ReadGro(fname="Myphd.gro")
+gro_data = read_gro_instance.gro_data
+xyz_i = gro_data[['residue_number', 'residue_name', 'atom_name', 'atom_id','x', 'y', 'z']].values
+print(xyz_i)
+mesh_generator = APL_ANALYSIS()
+x_mesh, y_mesh , grid_area ,  Mesh_NUMBER , mesh_resolution , mesh_size_X , mesh_size_Y , membrane_LX , membrane_LY= mesh_generator._get_xy_grid()
+result = mesh_generator.process_mesh(x_mesh, y_mesh, mesh_size_X, mesh_size_Y, Mesh_NUMBER, mesh_resolution,  xyz_i=xyz_i, max_z_threshold=1000, min_z_threshold=-1000, frame=0)
+print(result)
 
 
 
