@@ -5,3 +5,11 @@ In MD simulations, pressure arises from both particle motion and interactions:
     
 Since the system contains interfaces, a simple global pressure calculation is insufficient. Instead, the Irving-Kirkwood method is used to compute a spatially resolved pressure profile by distributing intermolecular forces along the interaction paths between particles. This approach is particularly useful for studying membranes, confined fluids, and other inhomogeneous systems.
 
+########
+
+The code (APL.py) calculates the area per lipid of a bilayer membrane. 
+
+########
+
+The code (APL.py) converts a configuration to topology file. 
+
