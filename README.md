@@ -11,5 +11,5 @@ The code (APL.py) calculates the area per lipid of a bilayer membrane.
 
 ########
 
-The code (APL.py) converts a configuration to topology file. 
+The code (gro_to_itp) converts a configuration to topology file. 
 
