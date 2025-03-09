@@ -13,3 +13,8 @@ The code (APL.py) calculates the area per lipid of a bilayer membrane.
 
 The code (gro_to_itp) converts a configuration to topology file. 
 
+########
+
+The code (Residue_Modifier.py) modifies residue files for a GROMACS configuration file (*.gro).
+In this case, the first 4 beads of a DLPC Martini membrane are set to head and the next 6 beads are set to tail. 
+
