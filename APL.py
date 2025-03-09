@@ -1,3 +1,7 @@
+import numpy as np
+import sys
+import typing
+import pandas as pd
 import pandas as pd
 import numpy as np
 import sys
@@ -10,22 +14,8 @@ import multiprocessing
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from itertools import islice
-import time
-
-
-start_time = time.time()
-
-
  
-
-outdir = '/home/uni08/soleimani/RUNS/POSTDOC/Martini_HD/Rim_Pore_Location/'
-indir = '/home/uni08/soleimani/RUNS/POSTDOC/Martini_HD/Rim_Pore_Location/APL_Post_Analysis.py/'
-
- 
-
-NUMBER_FRAMES=99
-
-
+NUMBER_FRAMES = 1 
 
 class ReadGro:
     """reading GRO file based on the doc"""
@@ -102,14 +92,10 @@ class ReadGro:
 
 
 
-
-
-
-
 class APL_ANALYSIS:
     
     
-    def __init__(self, membrane_LX: float =  10, membrane_LY: float = 8,  mesh_resolution: int = 30):  ### Number of Mesh = mesh_resolution * mesh_resolution
+    def __init__(self, membrane_LX: float = 43.61773, membrane_LY: float = 45.80338,  mesh_resolution: int = 2):  
         self.membrane_LX=membrane_LX
         self.membrane_LY=membrane_LY
         self.membrane_area = self.membrane_LX*self.membrane_LY
@@ -119,25 +105,25 @@ class APL_ANALYSIS:
     def _get_xy_grid(self) -> tuple[np.ndarray, np.ndarray]:
         """Generate a mesh grid for a given membrane area."""
         mesh_size_X = self.membrane_LX / self.mesh_resolution
-        print("mesh_size_X (nm):",mesh_size_X)
+        #print("mesh_size_X:",mesh_size_X)
         mesh_size_Y = self.membrane_LY / self.mesh_resolution
-        print("mesh_size_Y (nm):",mesh_size_Y)
+        #print("mesh_size_Y:",mesh_size_Y)
         grid_area=mesh_size_X*mesh_size_Y
-        print("grid_area:\n",grid_area)
+        #print("grid_area:",grid_area)
         
         
         x_mesh, y_mesh = np.meshgrid(
             np.arange(0.0, self.membrane_LX, mesh_size_X),
             np.arange(0.0, self.membrane_LY, mesh_size_Y)
         )
-        
-        
+
         L1=len(x_mesh)
         L2=len(y_mesh)
         Mesh_NUMBER=L1*L2
-        print(Mesh_NUMBER)
+        print("Mesh_NUMBER:",Mesh_NUMBER)
         
-        return x_mesh, y_mesh , grid_area ,  Mesh_NUMBER , self.mesh_resolution , mesh_size_X , mesh_size_Y  , self.membrane_LX  , self.membrane_LY
+
+        return x_mesh, y_mesh , grid_area ,  Mesh_NUMBER , self.mesh_resolution , mesh_size_X , mesh_size_Y  , self.membrane_area
     
     
 
@@ -153,7 +139,7 @@ class APL_ANALYSIS:
         
         df_i: pd.DataFrame = gro_data.copy()
         
-        output_file_path = os.path.join(output_directory, filename)
+        output_file_path = os.path.join(output_directory,filename)
         
         with open(output_file_path, 'w', encoding='utf8') as gro_file:
             if title:
@@ -173,117 +159,113 @@ class APL_ANALYSIS:
 
 
     
+    
+    
     @classmethod
-    def process_mesh(cls, x_mesh, y_mesh, mesh_size_X, mesh_size_Y, Mesh_NUMBER, mesh_resolution , xyz_i ,max_z_threshold,min_z_threshold , frame ):        
+    def process_mesh(cls, x_mesh, y_mesh, mesh_size_X , mesh_size_Y , Mesh_NUMBER, mesh_resolution,  xyz_i ,max_z_threshold,min_z_threshold , frame ):        
         """Process a single frame"""
-
+        #print("xyz_i:\n",xyz_i)
         
-        selected_atoms_info = {}
-
-        for i in range(x_mesh.shape[0]):
-            for j in range(x_mesh.shape[1]):
-                x_min_mesh =  6 + x_mesh[j, i]
-                #print("x_min_mesh:",x_min_mesh)
-                x_max_mesh =  6 + x_mesh[j, i] + mesh_size_X
-                #print("x_max_mesh:",x_max_mesh)
-                y_min_mesh = 18 + y_mesh[j, i]
-                #print("y_min_mesh:",y_min_mesh)
-                y_max_mesh = 18 + y_mesh[j, i] + mesh_size_Y
-                #print("y_max_mesh:",y_max_mesh)
-                
-                
-                mask_nc3 = (xyz_i[:, 2] == 'NC3') | (xyz_i[:, 2] == 'PO4') | (xyz_i[:, 2] == 'GL1') | (xyz_i[:, 2] == 'GL2') | (xyz_i[:, 2] == 'C1A') | (xyz_i[:, 2] == 'C2A') | (xyz_i[:, 2] == 'C3A') | (xyz_i[:, 2] == 'C1B') | (xyz_i[:, 2] == 'C2B') | (xyz_i[:, 2] == 'C3B')
-
-
-
-                # Apply the mask to select atoms within the current mesh element based on XY & Z
-                ind_in_mesh_nc3 = np.where((xyz_i[:, 4] >= x_min_mesh) &
-                                            (xyz_i[:, 4] < x_max_mesh) &
-                                            (xyz_i[:, 5] >= y_min_mesh) &
-                                            (xyz_i[:, 5] < y_max_mesh) &
-                                            (xyz_i[:, 6] < max_z_threshold) &
-                                            (xyz_i[:, 6] > min_z_threshold) &
-                                            mask_nc3)
-
-
-
-
-                grid_key = (i, j)
-                print("grid_key:",grid_key)
-                selected_atoms_info[grid_key] = []
-
-                for idx in ind_in_mesh_nc3[0]:
-                    # Save information for any atom\particle of the lipid inside the mesh 
-                    selected_atoms_info[grid_key].append(xyz_i[idx])
-
-
-                num_atoms_in_selected_info = len(selected_atoms_info[grid_key])
-                print("num_atoms_in_selected_info:",num_atoms_in_selected_info)
-
-
-
-        for folder_index in range(Mesh_NUMBER):
-            folder_path = f"Eolder_{folder_index}"
-            #print("folder_path:",folder_path)
-            os.makedirs(folder_path, exist_ok=True)
-            
-            
-            
+        
+        try:
         
 
-        # Iterate over the selected_atoms_info dictionary and save each grid's information to a file
-        for grid_key, atoms_info_list in selected_atoms_info.items():
-            # Get the corresponding folder path based on the grid index
-            folder_index = int(grid_key[0]) + int(grid_key[1]) * mesh_resolution
-            #print(folder_index)
-            folder_path = f"Eolder_{folder_index}"
-            print(folder_path)
+    
+            selected_atoms_info = {}
 
-            # Create the output file path based on grid_key
-            #output_file_path = os.path.join(folder_path, f"grid_{grid_key[0]}_{grid_key[1]}_{frame}.gro")  
-            output_file_path = os.path.join(folder_path, f"grid_{frame}.gro") 
+            for i in range(x_mesh.shape[0]):
+                for j in range(x_mesh.shape[1]):
+                    x_min_mesh = x_mesh[i, j]
+                    #print("x_min_mesh:\n",x_min_mesh)
+                    x_max_mesh = x_mesh[i, j] + mesh_size_X
+                    #print("x_max_mesh:\n",x_max_mesh)
+                    y_min_mesh = y_mesh[i, j]
+                    #print("y_min_mesh:\n",y_min_mesh)
+                    y_max_mesh = y_mesh[i, j] + mesh_size_Y
+                    #print("y_max_mesh:\n",y_max_mesh)
 
-            # Save the data_array to the output_file_path
-            
-            try:
+                    # Create a mask for atoms in the current mesh element where xyz_i[:, 2] == 'NC3'
+                    mask_nc3 = (xyz_i[:, 2] == 'NC3')
+
+                    # Apply the mask to select atoms within the current mesh element based on XY & Z
+                    ind_in_mesh_nc3 = np.where((xyz_i[:, 4]  >= x_min_mesh) &
+                                                (xyz_i[:, 4] < x_max_mesh) &
+                                                (xyz_i[:, 5] >= y_min_mesh) &
+                                                (xyz_i[:, 5] < y_max_mesh) &
+                                                (xyz_i[:, 6] < max_z_threshold) &
+                                                (xyz_i[:, 6] > min_z_threshold) &
+                                                mask_nc3 )
+
+
+
+
+                    grid_key = (i, j)
+                    selected_atoms_info[grid_key] = []
+
+                    for idx in ind_in_mesh_nc3[0]:
+                        # Save information for the 'NC3' and  the next 9 atoms
+                        selected_atoms_info[grid_key].append(xyz_i[idx])
+                        for k in range(idx + 1, min(idx + 10, len(xyz_i))):
+                            selected_atoms_info[grid_key].append(xyz_i[k])
+
+                    num_atoms_in_selected_info = len(selected_atoms_info[grid_key])
+                    print("num_atoms_in_selected_info:",num_atoms_in_selected_info)
+
+
+
+            for folder_index in range(Mesh_NUMBER):
+                folder_path = f"Eolder_{folder_index}"
+                os.makedirs(folder_path, exist_ok=True)
+
+            # Iterate over the selected_atoms_info dictionary and save each grid's information to a file
+            for grid_key, atoms_info_list in selected_atoms_info.items():
+                # Get the corresponding folder path based on the grid index
+                folder_index = int(grid_key[0]) + int(grid_key[1]) * mesh_resolution
+                #print(folder_index)
+                folder_path = f"Eolder_{folder_index}"
+                #print(folder_path)
+
+                # Create the output file path based on grid_key
+                #output_file_path = os.path.join(folder_path, f"grid_{grid_key[0]}_{grid_key[1]}_{frame}.gro")  
+                output_file_path = os.path.join(folder_path, f"grid_{frame}.gro") 
+                #print(output_file_path)
+
+                # Save the data_array to the output_file_path
                 data_array = np.array(atoms_info_list)
                 column_names = ['residue_number', 'residue_name', 'atom_name', 'atom_id', 'x', 'y', 'z']
                 df = pd.DataFrame(data_array, columns=column_names)
-                #print("df:",df)
+                #print(df)
 
 
                 apl_instance = APL_ANALYSIS()
-                #filename="grid_"+str(grid_key[0])+"_"+str(grid_key[1])+"_"+str(frame)+".gro"
+                filename="grid_"+str(grid_key[0])+"_"+str(grid_key[1])+"_"+str(frame)+".gro"
                 filename="grid_"+str(frame)+".gro"
-                pbc_box="42.44358  44.57039  18.80638"
+                pbc_box="43.61773  45.80338  18.04880"
                 title="This file contains information about atoms in the "+str(grid_key[0])+"_"+str(grid_key[1])+" grid in frame "+str(frame)+" .\n"
-                output_directory = folder_path
-                apl_instance.write_gromacs_gro(df, output_directory, filename, pbc_box, title)
-                print("Grid file has been created!")
-            except Exception as e:
-                print("Failed to create grid file:", e)
+                output_directory=folder_path
+                apl_instance.write_gromacs_gro(df,output_directory, filename, pbc_box, title)
                 
-                
+        except Exception as e:
+            print(f"Empty mesh ! ")
+     
 
-
+        
         return 0 
     
     
 
+    
+    
 
 
 def process_frame(frame):
     read_gro_instance = ReadGro(fname="conf"+str(frame)+".gro")
     gro_data = read_gro_instance.gro_data
     xyz_i = gro_data[['residue_number', 'residue_name', 'atom_name', 'atom_id','x', 'y', 'z']].values
-    
-
-    
-    
     mesh_generator = APL_ANALYSIS()
-    x_mesh, y_mesh , grid_area ,  Mesh_NUMBER , mesh_resolution , mesh_size_X , mesh_size_Y , membrane_LX , membrane_LY= mesh_generator._get_xy_grid()
-    result = mesh_generator.process_mesh(x_mesh, y_mesh, mesh_size_X, mesh_size_Y, Mesh_NUMBER, mesh_resolution,  xyz_i=xyz_i, max_z_threshold=1000, min_z_threshold=-1000, frame=frame)
-    #print("End of analyzing frame "+str(frame)+" .")
+    x_mesh, y_mesh, grid_area , Mesh_NUMBER, mesh_resolution , mesh_size_X , mesh_size_Y , membrane_area = mesh_generator._get_xy_grid()
+    result = mesh_generator.process_mesh(x_mesh, y_mesh, mesh_size_X , mesh_size_Y , Mesh_NUMBER, mesh_resolution,  xyz_i=xyz_i, max_z_threshold=1000, min_z_threshold=-1000, frame=frame)
+    print("End of analyzing frame "+str(frame)+" .")
     
     
 
@@ -292,14 +274,11 @@ if __name__ == "__main__":
     num_processes = multiprocessing.cpu_count()  
     with multiprocessing.Pool(processes=num_processes) as pool:
         pool.map(process_frame, frames)
-
-
-
+        
+            
 
 mesh_generator = APL_ANALYSIS()
-x_mesh, y_mesh , grid_area ,  Mesh_NUMBER , mesh_resolution , mesh_size_X , mesh_size_Y , membrane_LX , membrane_LY= mesh_generator._get_xy_grid()
-
-
+x_mesh, y_mesh, grid_area , Mesh_NUMBER, mesh_resolution , mesh_size_X , mesh_size_Y , membrane_area = mesh_generator._get_xy_grid()
 
 
 
